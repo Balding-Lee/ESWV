@@ -260,7 +260,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-d', '--dataset', help='semeval or SST', type=str)
 parser.add_argument('-v', '--vector', help="w2v or glove", type=str)
 parser.add_argument('-m', '--model',
-                    help="TextCNN, BiLSTM, TextRCNN, TextBiRCNN, GRU, BiGRU, BERT", type=str)
+                    help="TextCNN, BiLSTM, TextRCNN, TextBiRCNN, BERT", type=str)
 parser.add_argument('-t', '--type_of_vec', help='original or enhanced')
 parser.add_argument('-r', '--round', help='1, 2, or 3', default=None, type=int)
 parser.add_argument('-l', '--num_layers', help='0, 1, or 2', default=0, type=int)

@@ -12,7 +12,6 @@ import torch.optim as optim
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
-from random import choice
 from transformers.models.bert import BertTokenizer, BertModel
 import argparse
 
@@ -22,10 +21,10 @@ from utils import Utils
 from models.ESWV import ESWV
 
 
-def get_bert_embeddings(final_lexicon, utils):
+def get_bert_embeddings(sentiment_lexicon, utils, args):
     """
     Obtain the word embedding of BERT
-    :param final_lexicon: json
+    :param sentiment_lexicon: json
     :param utils: Object
     :return embeddings: LongTensor
             shape: (num_word_in_bert, 768)
@@ -33,16 +32,14 @@ def get_bert_embeddings(final_lexicon, utils):
             shape: (num_word_in_bert)
     :return: LongTensor
             shape: (num_word_in_bert)
-    :return id_word_mapping: dict
-            The mapping relationships between id and word in BERT
-    :return idx2id_mapping: dict
-            The mapping relationships between index and id in BERT
+    :return vocab_size: int
+            The size of the vocab
     """
     model = BertModel.from_pretrained(fp.bert_base_uncased)
     tokenizer = BertTokenizer.from_pretrained(fp.bert_base_uncased)
     bert_embed = model.get_input_embeddings()
 
-    words = list(final_lexicon.keys())
+    words = list(sentiment_lexicon.keys())
     UNK_id = tokenizer.unk_token_id
 
     word_id_mapping = {}
@@ -62,51 +59,66 @@ def get_bert_embeddings(final_lexicon, utils):
 
     y = []
     for word in word_id_mapping.keys():
-        y.append(final_lexicon[word])
+        y.append(sentiment_lexicon[word])
 
     # Since using id directly will cause IndexError,
     # we need to do a new mapping between id and index
     idx2id_mapping = {}
+    id2idx_mapping = {}
     for idx, id_ in enumerate(id_word_mapping.keys()):
         idx2id_mapping[idx] = id_
+        id2idx_mapping[id_] = idx
 
     X = torch.tensor(list(idx2id_mapping.keys()))
     embeddings = bert_embed(torch.tensor(list(id_word_mapping.keys())))
 
-    if not os.path.exists(fp.bert_vec_need_to_enhance):
-        utils.write_file('json', fp.bert_vec_need_to_enhance, id_word_mapping)
+    if args.enhance_mode == 'l':
+        utils.write_file('json', fp.bert_lexicon_word2idx, word_id_mapping)
+        utils.write_file('json', fp.bert_lexicon_idx2word, id_word_mapping)
+        utils.write_file('json', fp.bert_senti2token, idx2id_mapping)
+        utils.write_file('json', fp.bert_token2senti, id2idx_mapping)
+    else:
+        if args.corpus == 'semeval':
+            utils.write_file('json', fp.bert_semeval_lexicon_word2idx, word_id_mapping)
+            utils.write_file('json', fp.bert_semeval_lexicon_idx2word, id_word_mapping)
+            utils.write_file('json', fp.bert_semeval_senti2token, idx2id_mapping)
+            utils.write_file('json', fp.bert_semeval_token2senti, id2idx_mapping)
+        else:
+            utils.write_file('json', fp.bert_sst_lexicon_word2idx, word_id_mapping)
+            utils.write_file('json', fp.bert_sst_lexicon_idx2word, id_word_mapping)
+            utils.write_file('json', fp.bert_sst_senti2token, idx2id_mapping)
+            utils.write_file('json', fp.bert_sst_token2senti, id2idx_mapping)
 
-    return embeddings, X, torch.tensor(y), id_word_mapping, idx2id_mapping
+    return embeddings, X, torch.tensor(y), len(id_word_mapping)
 
 
-def get_word_id_mapping_and_y(final_lexicon):
+def get_word_id_mapping(final_lexicon):
     """
-    Obtaining the mapping relationships between id and word, and the true labels
+    Obtaining the mapping relationships between id and word
     :param final_lexicon: dict
     :return word2idx: dict
             The mapping relationships between word and id
     :return idx2word: dict
             The mapping relationships between id and word
-    :return y: tensor
-            True labels
     """
     word2idx = {}
     idx2word = {}
-    y = []
     i = 0
     for k in final_lexicon.keys():
         word2idx[k] = i
         idx2word[i] = k
         i += 1
-        y.append(final_lexicon[k])
 
-    return word2idx, idx2word, torch.LongTensor(y)
+    return word2idx, idx2word
 
 
-def get_embed_X_y(utils, wv='w2v'):
+def get_embed_X_y(utils, sentiment_lexicon, args):
     """
     Obtaining data iter
     :param utils: Object
+    :param sentiment_lexicon: dict
+            if enhance_mode == 'l', sentiment_lexicon is final_lexicon
+            if enhance_mode == 'c', sentiment_lexicon is corpus_lexicon
     :param wv: str
             'glove': obtain GloVe word embeddings
             'w2v': obtain Word2Vec word embeddings
@@ -116,70 +128,41 @@ def get_embed_X_y(utils, wv='w2v'):
             texts
     :return y: LongTensor
             labels
-    :return idx2word: dict
-            The mapping relationships between id and word
+    :return vocab_size: int
+            The size of the vocab
     """
-    final_lexicon = utils.read_file('json', fp.final_lexicon)
-    word2idx, idx2word, y = get_word_id_mapping_and_y(final_lexicon)
-    embed = utils.get_wv_embed(list(word2idx.keys()), wv=wv)
-    X = torch.LongTensor(list(idx2word.keys()))
+    if args.enhance_mode == 'l':
+        if os.path.exists(fp.final_lexicon_word2idx):
+            word2idx = utils.read_file('json', fp.final_lexicon_word2idx)
+            idx2word = utils.read_file('json', fp.final_lexicon_idx2word)
+        else:
+            word2idx, idx2word = get_word_id_mapping(sentiment_lexicon)
+            utils.write_file('json', fp.final_lexicon_word2idx, word2idx)
+            utils.write_file('json', fp.final_lexicon_idx2word, idx2word)
+    else:
+        if args.corpus == 'semeval':
+            if os.path.exists(fp.semeval_lexicon_word2idx):
+                word2idx = utils.read_file('json', fp.semeval_lexicon_word2idx)
+                idx2word = utils.read_file('json', fp.semeval_lexicon_idx2word)
+            else:
+                word2idx, idx2word = get_word_id_mapping(sentiment_lexicon)
+                utils.write_file('json', fp.semeval_lexicon_word2idx, word2idx)
+                utils.write_file('json', fp.semeval_lexicon_idx2word, idx2word)
+        else:
+            if os.path.exists(fp.sst_lexicon_word2idx):
+                word2idx = utils.read_file('json', fp.sst_lexicon_word2idx)
+                idx2word = utils.read_file('json', fp.sst_lexicon_idx2word)
+            else:
+                word2idx, idx2word = get_word_id_mapping(sentiment_lexicon)
+                utils.write_file('json', fp.sst_lexicon_word2idx, word2idx)
+                utils.write_file('json', fp.sst_lexicon_idx2word, idx2word)
 
-    return embed, X, y, idx2word
+    embed = utils.get_wv_embed(list(word2idx.keys()), wv=args.vector)
+    # When you load the json file, the keys of idx2word will be str
+    X = torch.LongTensor(list(word2idx.values()))
+    y = torch.LongTensor(list(sentiment_lexicon.values()))
 
-
-def generate_corrupted_sample(idx2word, final_lexicon):
-    """
-    Generating corrupted sample.
-
-    Extracte a random word in vocab as corrupted X, and ensure that the sentiment
-    orientation of the corrupted sample is different from the original sentiment
-    orientation.
-    :param idx2word: dict
-            The mapping relationships between id and word
-    :param final_lexicon: dict
-    :return corrupted_X: LongTensor
-            The id of corrupted sample
-    :return corrupted_y: LongTensor
-            The sentiment orientation of corrupted sample
-    """
-    orientation_list = [0, 1, 2]
-    corrupted_X = choice(list(idx2word.keys()))
-    corrupted_y = choice(orientation_list)
-
-    # If the randomly selected sentiment orientation is the same as the original
-    # sentiment orientation, then randomly selected it again
-    while corrupted_y == final_lexicon[idx2word[corrupted_X]]:
-        corrupted_y = choice(orientation_list)
-
-    return torch.tensor(corrupted_X).reshape(-1), torch.tensor(corrupted_y).reshape(-1)
-
-
-def generate_bert_corrupted_sample(id_word_mapping, idx2id_mapping, final_lexicon):
-    """
-    Generating corrupted sample of BERT
-    :param id_word_mapping: dict
-            The mapping relationships between id and word of BERT
-    :param idx2id_mapping: dict
-            The mapping relationships between index and id of BERT
-    :param final_lexicon: dict
-    :return corrupted_X: LongTensor
-            The id of corrupted sample
-    :return corrupted_y: LongTensor
-            The sentiment orientation of corrupted sample
-    """
-    orientation_list = [0, 1, 2]
-    corrupted_X = choice(list(idx2id_mapping.keys()))
-    corrupted_y = choice(orientation_list)
-
-    # If the randomly selected sentiment orientation is the same as the original
-    # sentiment orientation, then randomly selected it again
-    # idx2id_mapping[corrupted_X]: id
-    # id_word_mapping[id]: word
-    # final_lexicon[word]: orientation
-    while corrupted_y == final_lexicon[id_word_mapping[idx2id_mapping[corrupted_X]]]:
-        corrupted_y = choice(orientation_list)
-
-    return torch.tensor(corrupted_X).reshape(-1), torch.tensor(corrupted_y).reshape(-1)
+    return embed, X, y, len(idx2word)
 
 
 def train_dev_test_split(X, y):
@@ -245,10 +228,6 @@ def train(num_epochs, batch_size, lr, device, args):
             learning rate
     :param device: Object
     :param args: Object
-            num_layers:
-                0: no hidden layer
-                1: one hidden layer
-                2: two hidden layers
             vector:
                 'BERT': train ESWV with BERT word embeddings
                 'w2v': train ESWV with Word2Vec word embeddings
@@ -256,37 +235,38 @@ def train(num_epochs, batch_size, lr, device, args):
     :return:
     """
     utils = Utils()
-    final_lexicon = utils.read_file('json', fp.final_lexicon)
 
-    embed, X, y= None, None, None
-    save_path = '%sESWV_%s_hidden%s_parameters.pkl' % (fp.embeddings, args.vector,
-                                                       args.num_layers)
-    if args.vector == 'w2v':
-        embed, X, y, idx2word = get_embed_X_y(utils, wv='w2v')
-    elif args.vector == 'glove':
-        embed, X, y, idx2word = get_embed_X_y(utils, wv='glove')
+    embed, X, y, vocab_size = None, None, None, None
+
+    if args.enhance_mode == 'l':
+        save_path = '%sESWV_%s_parameters.pkl' % (fp.embeddings, args.vector)
+        sentiment_lexicon = utils.read_file('json', fp.final_lexicon)
+    else:
+        save_path = '%sESWV_%s_%s_parameters.pkl' % (
+            fp.embeddings, args.vector, args.corpus)
+        if args.corpus == 'semeval':
+            sentiment_lexicon = utils.read_file('json', fp.semeval_lexicon)
+        else:
+            sentiment_lexicon = utils.read_file('json', fp.sst_lexicon)
+
+    if args.vector == 'w2v' or args.vector == 'glove':
+        embed, X, y, vocab_size = get_embed_X_y(utils, sentiment_lexicon, args)
     elif args.vector == 'BERT':
-        embed, X, y, id_word_mapping, idx2id_mapping = get_bert_embeddings(final_lexicon,
-                                                                           utils)
+        embed, X, y, vocab_size = get_bert_embeddings(sentiment_lexicon, utils, args)
 
     assert embed is not None
     assert X is not None
     assert y is not None
-    assert 0 <= args.num_layers <= 2
+    assert vocab_size is not None
 
-    X_train, X_dev, X_test, y_train, y_dev, y_test = train_dev_test_split(X, y)
-    train_dataset = Data.TensorDataset(X_train, y_train)
-    dev_dataset = Data.TensorDataset(X_dev, y_dev)
-    test_dataset = Data.TensorDataset(X_test, y_test)
+    train_dataset = Data.TensorDataset(X, y)
     train_iter = Data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    dev_iter = Data.DataLoader(dev_dataset, batch_size=batch_size)
-    test_iter = Data.DataLoader(test_dataset, batch_size=batch_size)
 
-    model = ESWV(embed, 3, args).to(device)
+    model = ESWV(embed, 3, vocab_size).to(device)
     loss = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    dev_best_loss = float('inf')
+    train_best_loss = float('inf')
     # Record the iter of batch that the loss of the last validation set dropped
     last_improve = 0
     # Whether the result has not improved for a long time
@@ -297,15 +277,10 @@ def train(num_epochs, batch_size, lr, device, args):
 
         model.train()
         for X, y in train_iter:
-            if args.vector == 'w2v' or args.vector == 'glove':
-                corrupted_X, corrupted_y = generate_corrupted_sample(idx2word,
-                                                                     final_lexicon)
-            else:
-                corrupted_X, corrupted_y = generate_bert_corrupted_sample(id_word_mapping,
-                                                                          idx2id_mapping,
-                                                                          final_lexicon)
-            X = torch.cat((X, corrupted_X)).to(device)
-            y = torch.cat((y, corrupted_y)).to(device)
+
+            X = X.to(device)
+            y = y.to(device)
+
             y_hat = model(X)
             optimizer.zero_grad()
             l = loss(y_hat, y)
@@ -317,13 +292,11 @@ def train(num_epochs, batch_size, lr, device, args):
                 acc = accuracy_score(y.detach().cpu().numpy(), pred)
                 f1 = f1_score(y.detach().cpu().numpy(), pred, average='macro')
 
-                dev_loss, dev_acc, dev_f1 = evaluate(model, dev_iter, device)
-                print('iter %d, train loss %f, train accuracy %f, train macro-F1 %f,'
-                      'dev loss %f, dev accuracy %f, dev macro-F1 %f' %
-                      (i + 1, l.item(), acc, f1, dev_loss, dev_acc, dev_f1))
+                print('iter %d, train loss %f, train accuracy %f, train macro-F1 %f' %
+                      (i + 1, l.item(), acc, f1))
 
-                if dev_loss < dev_best_loss:
-                    dev_best_loss = dev_loss
+                if l.item() < train_best_loss:
+                    train_best_loss = l.item()
                     torch.save(model.state_dict(), save_path)
                     last_improve = i
 
@@ -340,20 +313,26 @@ def train(num_epochs, batch_size, lr, device, args):
         if flag:
             break
 
-    test_loss, test_acc, test_f1 = evaluate(model, test_iter, device)
+    model.load_state_dict(torch.load(save_path))
+    # test_loss, test_acc, test_f1 = evaluate(model, test_iter, device)
+    test_loss, test_acc, test_f1 = evaluate(model, train_iter, device)
     print('test loss %f, test accuracy %f, test macro-F1 %f' %
           (test_loss, test_acc, test_f1))
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 parser = argparse.ArgumentParser()
-parser.add_argument('-l', '--num_layers', help='number of hidden layers, 0, 1, or 2',
-                    default=0, type=int)
 parser.add_argument('-v', '--vector', help='w2v, glove, or BERT')
 parser.add_argument('-b', '--batch_size', type=int)
 parser.add_argument('-e', '--early_stop', type=int)
 parser.add_argument('-lr', '--learning_rate', type=float)
-parser.add_argument('-d', '--dropout', type=float)
+parser.add_argument('-em', '--enhance_mode', default='l', type=str,
+                    help='only train lexicon (l) or train all the corpus (c)')
+parser.add_argument('-c', '--corpus', type=str,
+                    help='semeval or SST')
 args = parser.parse_args()
+
+assert args.enhance_mode == 'l' or args.enhance_mode == 'c'
+
 train(num_epochs=200, batch_size=args.batch_size, lr=args.learning_rate,
       device=device, args=args)

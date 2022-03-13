@@ -17,31 +17,6 @@ from static_data import file_path as fp
 from utils import Utils
 
 
-def enhance_word_embed(embed, args):
-    """
-    增强词向量
-    :param embed: tensor
-    :param args: Object
-            vector:
-                'w2v': loading senti_vec trained by Word2Vec
-                'glove': loading senti_vec trained by GloVe
-            num_layers:
-                0: ESWV with no hidden layer
-                1: ESWV with one hidden layer
-                2: ESWV with two hidden layers
-    :return ESWV_embed: tensor
-            enhanced sentiment embeddings
-    """
-    file_path = '%sESWV_%s_hidden%s_parameters.pkl' % (fp.embeddings, args.vector,
-                                                       args.num_layers)
-    ESWV_params = torch.load(file_path)
-
-    senti_vec = ESWV_params['senti_vec'].reshape(-1)
-    ESWV_embed = torch.add(embed, senti_vec)
-
-    return ESWV_embed
-
-
 def get_word_list(X_list):
     """
     Combining all words together to form a list
@@ -74,6 +49,48 @@ def get_word_set(X_train, X_dev, X_test):
     test_list = get_word_list(X_test)
 
     return set(train_list + dev_list + test_list)
+
+
+def load_BERT_data(batch_size, args):
+    """
+    :param utils: Object
+    :param batch_size: int
+    :param args: Object
+            dataset: semeval or SST
+    :return:
+    """
+    X_train, y_train, X_dev, y_dev, X_test, y_test = load_experiment_dataset.load_data(args.dataset,
+                                                                                       False)
+    test_batch_X, test_batch_y, test_batch_count = get_data_iter(X_test,
+                                                                 y_test,
+                                                                 batch_size)
+
+    return test_batch_X, test_batch_y, test_batch_count
+
+
+def get_data_iter(X, y, batch_size):
+    """
+    :param X: ndarray
+            texts
+    :param y: ndarray
+            labels
+    :param batch_size: int
+    :return batch_X: list
+            [ndarray, ndarray, ..., ndarray]
+            putting the texts into a list according to the batch
+    :return batch_y: list
+            [ndarray, ndarray, ..., ndarray]
+            putting the labels into a list according to the batch
+    :return batch_count: int
+            how many batches are there in the data
+    """
+    batch_count = int(len(X) / batch_size)
+    batch_X, batch_y = [], []
+    for i in range(batch_count):
+        batch_X.append(X[i * batch_size: (i + 1) * batch_size])
+        batch_y.append(y[i * batch_size: (i + 1) * batch_size])
+
+    return batch_X, batch_y, batch_count
 
 
 def load_others_data(utils, batch_size, args):
@@ -140,16 +157,76 @@ def evaluate_others(model, test_iter, device):
     print('loss %f, accuracy %f, macro-F1 %f' % (loss_total / len(test_iter), acc, macro_F1))
 
 
+def evaluate_BERT(model, X_test, y_test, batch_count, device):
+    model.eval()
+    loss_total = 0
+    predict_all = np.array([], dtype=int)
+    labels_all = np.array([], dtype=int)
+
+    model.to(device)
+
+    with torch.no_grad():
+        for i in range(batch_count):
+            inputs = X_test[i]
+            labels = torch.tensor(y_test[i]).to(device)
+
+            outputs = model(inputs)
+            loss = F.cross_entropy(outputs, labels)
+            loss_total += loss
+            labels = labels.data.cpu().numpy()
+            predic = torch.max(outputs.data, 1)[1].cpu().numpy()
+            labels_all = np.append(labels_all, labels)
+            predict_all = np.append(predict_all, predic)
+
+    acc = accuracy_score(labels_all, predict_all)
+    macro_F1 = f1_score(labels_all, predict_all, average='macro')
+
+    print('loss %f, accuracy %f, macro-F1 %f' % (loss_total / len(X_test), acc, macro_F1))
+
+
+def test_bert(args, device):
+    model, batch_size = None, 64
+
+    if args.type_of_vec == 'original':
+        model_path = '%s%s_%s_%s_round%d.pkl' % (fp.experiment_results,
+                                                 args.model,
+                                                 args.dataset,
+                                                 args.type_of_vec,
+                                                 args.round)
+    else:
+        if args.enhance_mode == 'l':
+            model_path = '%s%s_%s_%s_round%d.pkl' % (fp.experiment_results,
+                                                     args.model,
+                                                     args.dataset,
+                                                     args.type_of_vec,
+                                                     args.round)
+        else:
+            model_path = '%s%s_%s_%s_round%d_c.pkl' % (fp.experiment_results,
+                                                       args.model,
+                                                       args.dataset,
+                                                       args.type_of_vec,
+                                                       args.round)
+
+    model = torch.load(model_path)
+
+    test_batch_X, test_batch_y, test_batch_count = load_BERT_data(batch_size, args)
+
+    evaluate_BERT(model, test_batch_X, test_batch_y, test_batch_count, device)
+
+
 def test_others(args, utils, device):
     model, batch_size = None, 64
 
     if args.type_of_vec == 'original':
-        model_path = '%s%s_%s_%s_%s.pkl' % (fp.experiment_results, args.model, args.dataset,
-                                            args.vector, args.type_of_vec)
+        model_path = '%s%s_%s_%s_%s.pkl' % (fp.experiment_results, args.model,
+                                            args.dataset, args.vector, args.type_of_vec)
     else:
-        model_path = '%s%s_%s_%s_%s_hidden%s.pkl' % (fp.experiment_results, args.model,
-                                                     args.dataset, args.vector,
-                                                     args.type_of_vec, args.num_layers)
+        if args.enhance_mode == 'l':
+            model_path = '%s%s_%s_%s_%s.pkl' % (fp.experiment_results, args.model,
+                                                args.dataset, args.vector, args.type_of_vec)
+        else:
+            model_path = '%s%s_%s_%s_%s_c.pkl' % (fp.experiment_results, args.model,
+                                                  args.dataset, args.vector, args.type_of_vec)
 
     if args.model == 'TextRCNN' or args.model == 'TextBiRCNN':
         batch_size = 128
@@ -168,16 +245,18 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-d', '--dataset', help='semeval or SST', type=str)
 parser.add_argument('-v', '--vector', help="w2v or glove", type=str)
 parser.add_argument('-m', '--model',
-                    help="TextCNN, BiLSTM, TextRCNN, TextBiRCNN", type=str)
+                    help="TextCNN, BiLSTM, TextRCNN, TextBiRCNN, BERT", type=str)
 parser.add_argument('-t', '--type_of_vec', help='original or enhanced')
 parser.add_argument('-r', '--round', help='1, 2, or 3', default=None, type=int)
-parser.add_argument('-l', '--num_layers', help='0, 1, or 2', default=0, type=int)
+parser.add_argument('-em', '--enhance_mode', default='l', type=str,
+                    help='only train lexicon (l) or train all the corpus (c)')
 args = parser.parse_args()
 
-assert 0 <= args.num_layers <= 2
+assert args.enhance_mode == 'l' or args.enhance_mode == 'c'
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-test_others(args, utils, device)
-
-    
+if args.model == 'BERT':
+    test_bert(args, device)
+else:
+    test_others(args, utils, device)

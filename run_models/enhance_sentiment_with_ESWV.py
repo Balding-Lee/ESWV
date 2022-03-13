@@ -24,27 +24,45 @@ from preprocess import load_experiment_dataset
 from utils import Utils
 
 
-def enhance_word_embed(embed, args):
+def enhance_word_embed(X_set, utils, embed, args):
     """
+    :param X_set: set
+            词语集合
+    :param utils: Object
     :param embed: tensor
             word embeddings
     :param args: Object
             vector:
                 'w2v': loading senti_vec trained by Word2Vec
                 'glove': loading senti_vec trained by GloVe
-            num_layers:
-                0: ESWV with no hidden layer
-                1: ESWV with one hidden layer
-                2: ESWV with two hidden layers
     :return ESWV_embed: tensor
             enhanced word embeddings
     """
-    file_path = '%sESWV_%s_hidden%s_parameters.pkl' % (fp.embeddings, args.vector,
-                                                       args.num_layers)
-    ESWV_params = torch.load(file_path)
+    if args.enhance_mode == 'l':
+        file_path = '%sESWV_%s_parameters.pkl' % (fp.embeddings, args.vector)
+        lexicon_word2idx = utils.read_file('json', fp.final_lexicon_word2idx)
+    else:
+        file_path = '%sESWV_%s_%s_parameters.pkl' % (fp.embeddings,
+                                                     args.vector,
+                                                     args.dataset)
+        if args.dataset == 'semeval':
+            lexicon_word2idx = utils.read_file('json', fp.semeval_lexicon_word2idx)
+        else:
+            lexicon_word2idx = utils.read_file('json', fp.sst_lexicon_word2idx)
 
-    senti_vec = ESWV_params['senti_vec'].reshape(-1)
-    ESWV_embed = torch.add(embed, senti_vec)
+    ESWV_params = torch.load(file_path, map_location='cpu')
+
+    senti_vec = ESWV_params['senti_vec.weight']
+    X_list = list(X_set)
+
+    ESWV_embed = embed.clone()
+
+    for word in lexicon_word2idx.keys():
+        if word in X_list:
+            X_id = X_list.index(word)
+            ESWV_embed[X_id] = torch.add(ESWV_embed[X_id],
+                                         senti_vec[lexicon_word2idx[word]])
+
 
     return ESWV_embed
 
@@ -83,10 +101,9 @@ def get_word_set(X_train, X_dev, X_test):
     return set(train_list + dev_list + test_list)
 
 
-def load_data(utils, batch_size, args):
+def load_data(utils, args):
     """
     :param utils: Object
-    :param batch_size: int
     :param args: Object
             dataset: semeval or SST
     :return X_set: set
@@ -137,9 +154,9 @@ def load_data(utils, batch_size, args):
     dev_dataset = Data.TensorDataset(X_dev, y_dev)
     test_dataset = Data.TensorDataset(X_test, y_test)
 
-    train_iter = Data.DataLoader(train_dataset, batch_size, shuffle=True)
-    dev_iter = Data.DataLoader(dev_dataset, batch_size)
-    test_iter = Data.DataLoader(test_dataset, batch_size)
+    train_iter = Data.DataLoader(train_dataset, args.batch_size, shuffle=True)
+    dev_iter = Data.DataLoader(dev_dataset, args.batch_size)
+    test_iter = Data.DataLoader(test_dataset, args.batch_size)
 
     return X_set, train_iter, dev_iter, test_iter, max_seq_length
 
@@ -186,15 +203,18 @@ def evaluate(model, data_iter, device):
 def train(num_epochs, device, args, enhanced=True):
     num_outputs = 2
     utils = Utils()
-    X_set, train_iter, dev_iter, test_iter, max_seq_length = load_data(utils, args.batch_size, args)
+    X_set, train_iter, dev_iter, test_iter, max_seq_length = load_data(utils, args)
 
     save_path = '%s%s_%s_%s' % (fp.experiment_results, args.model, args.dataset, args.vector)
     embed = utils.get_word_embed(X_set, wv=args.vector)
 
     if enhanced:
-        ESWV_embed = enhance_word_embed(embed, args)
+        ESWV_embed = enhance_word_embed(X_set, utils, embed, args)
         embed = torch.cat((embed, torch.zeros(1, ESWV_embed.shape[1])))
-        save_path += '_enhanced_hidden%s.pkl' % args.num_layers
+        if args.enhance_mode == 'l':
+            save_path += '_enhanced.pkl'
+        else:
+            save_path += '_enhanced_c.pkl'
     else:
         # The vector of <PAD> is all 0s
         embed = torch.cat((embed, torch.zeros(1, embed.shape[1])))
@@ -254,6 +274,7 @@ def train(num_epochs, device, args, enhanced=True):
 
                 if dev_loss < dev_best_loss:
                     dev_best_loss = dev_loss
+                    torch.save(model, save_path)
                     last_improve = i
                 model.to(model_device)
 
@@ -266,9 +287,10 @@ def train(num_epochs, device, args, enhanced=True):
             i += 1
         if flag:
             break
-    torch.save(model, save_path)
+
     print('%.2f seconds used' % (time.time() - start))
 
+    model = torch.load(save_path)
     test_loss, test_acc, test_macro_F1 = evaluate(model, test_iter, device)
     print('test loss %f, test accuracy %f, test macro-F1 %f' % (
         test_loss, test_acc, test_macro_F1))
@@ -280,12 +302,13 @@ parser.add_argument('-d', '--dataset', help='semeval or SST', type=str)
 parser.add_argument('-v', '--vector', help="w2v or glove", type=str)
 parser.add_argument('-m', '--model', help="TextCNN, BiLSTM, TextRCNN, TextBiRCNN", type=str)
 parser.add_argument('-t', '--type_of_vec', help='original or enhanced')
-parser.add_argument('-l', '--num_layers', help='0, 1, or 2', default=0, type=int)
 parser.add_argument('-b', '--batch_size', default=64, type=int)
 parser.add_argument('-e', '--early_stop', default=256, type=int)
+parser.add_argument('-em', '--enhance_mode', default='l', type=str,
+                    help='only train lexicon (l) or train all the corpus (c)')
 args = parser.parse_args()
 
-assert 0 <= args.num_layers <= 2
+assert args.enhance_mode == 'l' or args.enhance_mode == 'c'
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if args.type_of_vec == 'original':

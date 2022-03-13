@@ -12,84 +12,12 @@ import torch.optim as optim
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
-from transformers.models.bert import BertTokenizer, BertModel
 import argparse
 
 sys.path.append('..')
 from static_data import file_path as fp
 from utils import Utils
 from models.ESWV import ESWV
-
-
-def get_bert_embeddings(sentiment_lexicon, utils, args):
-    """
-    Obtain the word embedding of BERT
-    :param sentiment_lexicon: json
-    :param utils: Object
-    :return embeddings: LongTensor
-            shape: (num_word_in_bert, 768)
-    :return X: LongTensor
-            shape: (num_word_in_bert)
-    :return: LongTensor
-            shape: (num_word_in_bert)
-    :return vocab_size: int
-            The size of the vocab
-    """
-    model = BertModel.from_pretrained(fp.bert_base_uncased)
-    tokenizer = BertTokenizer.from_pretrained(fp.bert_base_uncased)
-    bert_embed = model.get_input_embeddings()
-
-    words = list(sentiment_lexicon.keys())
-    UNK_id = tokenizer.unk_token_id
-
-    word_id_mapping = {}
-    id_word_mapping = {}
-    word_not_in_embed = 0
-    for word in words:
-        token_id = tokenizer.convert_tokens_to_ids(word)
-        if token_id == UNK_id:
-            word_not_in_embed += 1
-            continue
-        else:
-            word_id_mapping[word] = token_id
-            id_word_mapping[token_id] = word
-
-    print('The number of words in the lexicon but not in the word embedding of BERT is %d'
-          % word_not_in_embed)
-
-    y = []
-    for word in word_id_mapping.keys():
-        y.append(sentiment_lexicon[word])
-
-    # Since using id directly will cause IndexError,
-    # we need to do a new mapping between id and index
-    idx2id_mapping = {}
-    id2idx_mapping = {}
-    for idx, id_ in enumerate(id_word_mapping.keys()):
-        idx2id_mapping[idx] = id_
-        id2idx_mapping[id_] = idx
-
-    X = torch.tensor(list(idx2id_mapping.keys()))
-    embeddings = bert_embed(torch.tensor(list(id_word_mapping.keys())))
-
-    if args.enhance_mode == 'l':
-        utils.write_file('json', fp.bert_lexicon_word2idx, word_id_mapping)
-        utils.write_file('json', fp.bert_lexicon_idx2word, id_word_mapping)
-        utils.write_file('json', fp.bert_senti2token, idx2id_mapping)
-        utils.write_file('json', fp.bert_token2senti, id2idx_mapping)
-    else:
-        if args.corpus == 'semeval':
-            utils.write_file('json', fp.bert_semeval_lexicon_word2idx, word_id_mapping)
-            utils.write_file('json', fp.bert_semeval_lexicon_idx2word, id_word_mapping)
-            utils.write_file('json', fp.bert_semeval_senti2token, idx2id_mapping)
-            utils.write_file('json', fp.bert_semeval_token2senti, id2idx_mapping)
-        else:
-            utils.write_file('json', fp.bert_sst_lexicon_word2idx, word_id_mapping)
-            utils.write_file('json', fp.bert_sst_lexicon_idx2word, id_word_mapping)
-            utils.write_file('json', fp.bert_sst_senti2token, idx2id_mapping)
-            utils.write_file('json', fp.bert_sst_token2senti, id2idx_mapping)
-
-    return embeddings, X, torch.tensor(y), len(id_word_mapping)
 
 
 def get_word_id_mapping(final_lexicon):
@@ -229,7 +157,6 @@ def train(num_epochs, batch_size, lr, device, args):
     :param device: Object
     :param args: Object
             vector:
-                'BERT': train ESWV with BERT word embeddings
                 'w2v': train ESWV with Word2Vec word embeddings
                 'glove': train ESWV with GloVe word embeddings
     :return:
@@ -248,11 +175,8 @@ def train(num_epochs, batch_size, lr, device, args):
             sentiment_lexicon = utils.read_file('json', fp.semeval_lexicon)
         else:
             sentiment_lexicon = utils.read_file('json', fp.sst_lexicon)
-
-    if args.vector == 'w2v' or args.vector == 'glove':
-        embed, X, y, vocab_size = get_embed_X_y(utils, sentiment_lexicon, args)
-    elif args.vector == 'BERT':
-        embed, X, y, vocab_size = get_bert_embeddings(sentiment_lexicon, utils, args)
+            
+    embed, X, y, vocab_size = get_embed_X_y(utils, sentiment_lexicon, args)
 
     assert embed is not None
     assert X is not None
@@ -322,7 +246,7 @@ def train(num_epochs, batch_size, lr, device, args):
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 parser = argparse.ArgumentParser()
-parser.add_argument('-v', '--vector', help='w2v, glove, or BERT')
+parser.add_argument('-v', '--vector', help='w2v, glove')
 parser.add_argument('-b', '--batch_size', type=int)
 parser.add_argument('-e', '--early_stop', type=int)
 parser.add_argument('-lr', '--learning_rate', type=float)
